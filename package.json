@@ -5,7 +5,13 @@
     "Signal K server plugin to send all numeric values & positions to InfluxDb",
   "main": "index.js",
   "scripts": {
-    "format": "prettier-standard '*.js*'"
+    "format": "prettier-standard '*.js*'",
+    "precommit": "lint-staged"
+  },
+  "lint-staged": {
+    "linters": {
+      "*.js*": ["prettier-standard", "git add"]
+    }
   },
   "repository": "https://github.com/tkurki/signalk-to-influxdb",
   "keywords": ["signalk-node-server-plugin"],
@@ -17,6 +23,8 @@
     "influx": "^5.0.0"
   },
   "devDependencies": {
+    "husky": "^0.14.3",
+    "lint-staged": "^4.2.3",
     "prettier-standard": "^6.0.0"
   }
 }
