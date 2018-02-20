@@ -23,11 +23,20 @@ module.exports = function (app) {
   let selfContext = 'vessels.' + app.selfId
   let lastPositionStored = 0
   let recordTrack = false
+  let writeBus = new Bacon.Bus()
 
   let unsubscribes = []
   let shouldStore = function (path) {
     return true
   }
+
+  writeBus
+    .bufferWithTimeOrCount(10000, 100)
+    .map(data => [].concat.apply([], data))
+    .onValue(data => {
+      client && client.writePoints(data)
+        .catch(e => console.error(e))
+    })
 
   function handleDelta (delta) {
     if (delta.context === 'vessels.self') {
@@ -36,13 +45,15 @@ module.exports = function (app) {
 
     if (delta.updates && delta.context === selfContext) {
       delta.updates.forEach(update => {
+        const timestamp = update.timestamp ? update.timestamp : new Date()
         if (update.values) {
           var points = update.values.reduce((acc, pathValue) => {
             if ( pathValue.path === 'navigation.position' ) {
               if ( recordTrack &&
-                   new Date().getTime() - lastPositionStored > 1000
+                   timestamp.getTime() - lastPositionStored > 1000
                  ) {
                 acc.push({
+                  timestamp,
                   measurement: pathValue.path,
                   fields: {
                     value: JSON.stringify([
@@ -51,58 +62,27 @@ module.exports = function (app) {
                     ])
                   }
                 })
-                lastPositionStored = new Date().getTime()
+                lastPositionStored = timestamp.getTime()
               }
             } else if (shouldStore(pathValue.path)) {
               if (typeof pathValue.value === 'number') {
                 acc.push({
+                  timestamp,
                   measurement: pathValue.path,
                   fields: {
                     value: pathValue.value
                   }
                 })
-              } 
+              }
             }
             return acc
           }, [])
           if (points.length > 0) {
-            try {
-              client.writePoints(points, function (err, response) {
-                if (err) {
-                  console.error(err.message)
-                  console.error(response)
-                }
-              })
-            } catch (ex) {
-              console.error(ex.message)
-            }
+            writeBus.push(points)
           }
         }
       })
     }
-  }
-
-  function toMultilineString (influxResult) {
-    let currentLine = []
-    const result = {
-      type: 'MultiLineString',
-      coordinates: []
-    }
-
-    influxResult.forEach(row => {
-      if (row.position === null) {
-        currentLine = []
-      } else {
-        currentLine[currentLine.length] = JSON.parse(row.position)
-        if (currentLine.length === 1) {
-          result.coordinates[result.coordinates.length] = currentLine
-        }
-      }
-    })
-    return result
-  }
-  function timewindowStart () {
-    return new Date(new Date().getTime() - 60 * 60 * 1000).toISOString()
   }
 
   return {
@@ -206,46 +186,6 @@ module.exports = function (app) {
       recordTrack = options.recordTrack
 
       app.signalk.on('delta', handleDelta)
-
-      unsubscribes.push(
-        Bacon.combineWith(function (awaDeg, aws, sog, cogDeg) {
-          const cog = cogDeg / 180 * Math.PI
-          const awa = awaDeg / 180 * Math.PI
-          return [
-            {
-              measurement: 'environmentWindDirectionTrue',
-              fields: {
-                value: getTrueWindAngle(sog, aws, awa) + cog
-              }
-            },
-            {
-              measurement: 'environmentWindSpeedTrue',
-              fields: {
-                value: getTrueWindSpeed(sog, aws, awa)
-              }
-            }
-          ]
-        }, [
-          'environment.wind.angleApparent',
-          'environment.wind.speedApparent',
-          'navigation.speedOverGround',
-          'navigation.courseOverGroundTrue'
-        ].map(app.streambundle.getSelfStream, app.streambundle))
-          .changes()
-          .debounceImmediate(options.resolution || 200)
-          .onValue(points => {
-            try {
-              client.writePoints(points, function (err, response) {
-                if (err) {
-                  console.error(err)
-                  console.error(response)
-                }
-              })
-            } catch (ex) {
-              console.error(ex.message)
-            }
-          })
-      )
     },
     stop: function () {
       unsubscribes.forEach(f => f())
@@ -313,4 +253,28 @@ function getTrueWindSpeed (speed, windSpeed, windAngle) {
   var apparentX = Math.cos(windAngle) * windSpeed
   var apparentY = Math.sin(windAngle) * windSpeed
   return Math.sqrt(Math.pow(apparentY, 2) + Math.pow(-speed + apparentX, 2))
+}
+
+function toMultilineString (influxResult) {
+  let currentLine = []
+  const result = {
+    type: 'MultiLineString',
+    coordinates: []
+  }
+
+  influxResult.forEach(row => {
+    if (row.position === null) {
+      currentLine = []
+    } else {
+      currentLine[currentLine.length] = JSON.parse(row.position)
+      if (currentLine.length === 1) {
+        result.coordinates[result.coordinates.length] = currentLine
+      }
+    }
+  })
+  return result
+}
+
+function timewindowStart () {
+  return new Date(new Date().getTime() - 60 * 60 * 1000).toISOString()
 }
